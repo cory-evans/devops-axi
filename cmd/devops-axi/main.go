@@ -53,6 +53,6 @@ func newWorkItemCommand(out io.Writer) *cobra.Command {
 	}
 	cmd.SetOut(out)
 	cmd.SetErr(out)
-	cmd.AddCommand(newListCommand(out))
+	cmd.AddCommand(newListCommand(out), newShowCommand(out))
 	return cmd
 }
