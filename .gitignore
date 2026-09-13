@@ -1,0 +1,4 @@
+bin/
+
+# Go tooling
+coverage.out
