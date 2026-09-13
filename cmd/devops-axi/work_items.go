@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"strconv"
 	"strings"
@@ -19,6 +20,47 @@ type listOptions struct {
 }
 
 var runAz = az.Run
+
+func newShowCommand(out io.Writer) *cobra.Command {
+	var fields string
+	cmd := &cobra.Command{
+		Use:   "show <id>",
+		Short: "Show a work item.",
+		Args: func(cmd *cobra.Command, args []string) error {
+			if len(args) != 1 {
+				return fmt.Errorf("exactly one work-item ID is required")
+			}
+			if id, err := strconv.Atoi(args[0]); err != nil || id < 1 {
+				return fmt.Errorf("work-item ID must be a positive number")
+			}
+			return nil
+		},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			data, err := runAz(context.Background(), "boards", "work-item", "show", "--id", args[0], "--output", "json", "--only-show-errors")
+			if err != nil {
+				return fmt.Errorf("unable to show work item; verify the ID and Azure DevOps configuration")
+			}
+			var item workItem
+			if err := json.Unmarshal(data, &item); err != nil {
+				return fmt.Errorf("Azure DevOps returned invalid work-item data")
+			}
+			project, _ := item.Fields["System.TeamProject"].(string)
+			comments, err := runAz(context.Background(), "devops", "invoke", "--area", "wit", "--resource", "comments", "--route-parameters", "project="+project, "workItemId="+args[0], "--api-version", "7.1-preview", "--output", "json", "--only-show-errors")
+			if err != nil {
+				return fmt.Errorf("unable to retrieve work-item discussion")
+			}
+			if err := printItem(cmd.OutOrStdout(), item, fields, comments); err != nil {
+				return fmt.Errorf("Azure DevOps returned invalid work-item discussion data")
+			}
+			return nil
+		},
+	}
+	cmd.SetOut(out)
+	cmd.SetErr(out)
+	cmd.Flags().StringVar(&fields, "fields", "", "Comma-separated additional fields.")
+	cmd.Example = "  devops-axi work-item show 42\n  devops-axi work-item show 42 --fields System.Description"
+	return cmd
+}
 
 func newListCommand(out io.Writer) *cobra.Command {
 	o := &listOptions{}
@@ -114,16 +156,74 @@ func printItems(w io.Writer, data []byte, o listOptions) int {
 	return 0
 }
 
+type comment struct {
+	CreatedBy struct {
+		DisplayName string `json:"displayName"`
+	} `json:"createdBy"`
+	CreatedDate string `json:"createdDate"`
+	Text        string `json:"text"`
+}
+
+type commentsResponse struct {
+	Comments []comment `json:"comments"`
+}
+
+func printItem(w io.Writer, item workItem, extra string, commentsData []byte) error {
+	fields := []string{"System.Id", "System.Title", "System.State", "System.AssignedTo", "System.Description"}
+	for _, field := range strings.Split(extra, ",") {
+		field = strings.TrimSpace(field)
+		if field != "" && !contains(fields, field) {
+			fields = append(fields, field)
+		}
+	}
+	fmt.Fprintln(w, "workItem:")
+	for _, field := range fields {
+		fmt.Fprintf(w, "  %s: %s\n", toonNames([]string{field})[0], toonValue(fieldValue(item, field)))
+	}
+	var comments commentsResponse
+	if err := json.Unmarshal(commentsData, &comments); err != nil {
+		return err
+	}
+	fmt.Fprintf(w, "discussion[%d]{who,content,time}:\n", len(comments.Comments))
+	for _, comment := range comments.Comments {
+		fmt.Fprintf(w, "  %s,%s,%s\n", toonValue(comment.CreatedBy.DisplayName), toonValue(plainText(comment.Text)), toonValue(comment.CreatedDate))
+	}
+	return nil
+}
+
 func fieldValue(item workItem, field string) any {
 	if field == "System.Id" {
 		return item.ID
 	}
 	v := item.Fields[field]
+	if (field == "System.Description" || field == "System.History") && v != nil {
+		if text, ok := v.(string); ok {
+			return plainText(text)
+		}
+	}
 	if m, ok := v.(map[string]any); ok {
 		return m["displayName"]
 	}
 	return v
 }
+func plainText(s string) string {
+	var out strings.Builder
+	inTag := false
+	for _, r := range html.UnescapeString(s) {
+		switch r {
+		case '<':
+			inTag = true
+		case '>':
+			inTag = false
+		default:
+			if !inTag {
+				out.WriteRune(r)
+			}
+		}
+	}
+	return strings.TrimSpace(out.String())
+}
+
 func toonNames(fields []string) []string {
 	out := make([]string, len(fields))
 	for i, f := range fields {
@@ -136,6 +236,10 @@ func toonNames(fields []string) []string {
 			out[i] = "state"
 		case "System.AssignedTo":
 			out[i] = "assignedTo"
+		case "System.Description":
+			out[i] = "description"
+		case "System.History":
+			out[i] = "discussion"
 		default:
 			out[i] = f
 		}

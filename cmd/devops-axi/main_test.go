@@ -20,6 +20,13 @@ func TestExecuteHelpAndVersion(t *testing.T) {
 	}
 }
 
+func TestPlainText(t *testing.T) {
+	got := plainText("<div>Hello&nbsp;<b>world</b> &#128522;</div>")
+	if got != "Hello world 😊" {
+		t.Fatalf("plainText = %q", got)
+	}
+}
+
 func TestListQuery(t *testing.T) {
 	got := buildWIQL(listOptions{state: "Active, New", assignedTo: "Cory", limit: 20})
 	want := "SELECT [System.Id], [System.Title], [System.State], [System.AssignedTo] FROM WorkItems WHERE ([System.State] = 'Active' OR [System.State] = 'New') AND [System.AssignedTo] CONTAINS 'Cory' ORDER BY [System.ChangedDate] DESC"
